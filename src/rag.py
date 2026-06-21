@@ -5,7 +5,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 from src.config import (
-    VECTOR_DB_DIR, CHAT_MODEL, EMBED_MODEL, TOP_K, COLLECTION_NAME, require_api_key,
+    VECTOR_DB_DIR, CHAT_MODEL, EMBED_MODEL, TOP_K, COLLECTION_NAME, RETRIEVAL_MODE, require_api_key,
 )
 
 SYSTEM_PROMPT = """You are the Vela Cloud internal knowledge assistant.
@@ -28,14 +28,10 @@ PROMPT = ChatPromptTemplate.from_messages(
 )
 
 
-def _get_retriever():
-    embeddings = GoogleGenerativeAIEmbeddings(model=EMBED_MODEL)
-    vectordb = Chroma(
-        persist_directory=str(VECTOR_DB_DIR),
-        embedding_function=embeddings,
-        collection_name=COLLECTION_NAME,
-    )
-    return vectordb.as_retriever(search_kwargs={"k": TOP_K})
+def get_retriever():
+    # Phase 2: dense / hybrid / hybrid+rerank, chosen by RETRIEVAL_MODE in .env
+    from src.retriever import build_retriever
+    return build_retriever(RETRIEVAL_MODE)
 
 
 def _format_context(docs) -> str:
@@ -51,7 +47,7 @@ def _format_context(docs) -> str:
 def answer_question(question: str) -> dict:
     require_api_key()
 
-    retriever = _get_retriever()
+    retriever = get_retriever()
     docs = retriever.invoke(question)
     context = _format_context(docs)
 

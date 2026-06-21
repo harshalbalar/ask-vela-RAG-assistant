@@ -7,8 +7,11 @@ chromadb>=0.5.0
 python-dotenv>=1.0.0
 
 # --- Retrieval quality (Phase 2) ---
-# rank-bm25>=0.2.2
-# sentence-transformers>=2.7.0   # optional: local reranker
+langchain>=0.3.0
+langchain-community>=0.3.0
+rank-bm25>=0.2.2
+sentence-transformers>=2.7.0   # local cross-encoder re-ranker + local embeddings
+langchain-huggingface>=0.1.0   # local embedding models
 
 # --- Evaluation (Phase 3) ---
 # ragas>=0.2.0
