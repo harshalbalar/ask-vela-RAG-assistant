@@ -1,0 +1,20 @@
+# --- Core (Phase 1) ---
+langchain-core>=0.3.0
+langchain-text-splitters>=0.3.0
+langchain-google-genai>=2.1.0
+langchain-chroma>=0.1.4
+chromadb>=0.5.0
+python-dotenv>=1.0.0
+
+# --- Retrieval quality (Phase 2) ---
+# rank-bm25>=0.2.2
+# sentence-transformers>=2.7.0   # optional: local reranker
+
+# --- Evaluation (Phase 3) ---
+# ragas>=0.2.0
+# datasets>=2.19.0
+
+# --- API + UI (Phase 4-5) ---
+# fastapi>=0.110.0
+# uvicorn>=0.29.0
+# streamlit>=1.35.0
