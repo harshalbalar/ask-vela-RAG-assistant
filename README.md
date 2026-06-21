@@ -1,112 +1,159 @@
 # Vela Cloud — Internal Knowledge-Base Assistant (RAG)
 
-A retrieval-augmented assistant that answers questions over Vela Cloud's internal
-documents (HR policies, engineering wiki, IT/security, operations SOPs, product),
-with source citations so every answer is traceable.
+A retrieval-augmented question-answering system over a company's internal documents,
+built to production patterns: hybrid search, cross-encoder re-ranking, source-cited
+answers, and — the part most portfolios skip — a measured evaluation of both retrieval
+and answer quality.
 
-> **Vela Cloud** is a *fictional* company. All documents in `data/docs/` are synthetic,
-> written for this project. No real company data is used.
+> Repo: `ask-vela-rag-assistant`. **Vela Cloud is a fictional company**; all 109 documents
+> in `data/docs/` are synthetic, written for this project. No real company data is used.
 
-## Project status
-- [x] Phase 0 — Setup & dataset
-- [x] Phase 1 — Baseline RAG (load → chunk → embed → retrieve → answer with citations)
-- [x] Phase 2 — Retrieval quality (hybrid BM25+dense, cross-encoder re-ranker, harder eval set)
-- [ ] Phase 3 — Evaluation (RAGAS / LLM-as-judge)
-- [ ] Phase 4 — Observability + FastAPI
-- [ ] Phase 5 — Frontend + deploy
-- [ ] Phase 6 — Guardrails + polish
+---
 
-## Stack
-LangChain · **Gemini 2.5 Flash** (chat) · **gemini-embedding-001** (embeddings) ·
-Chroma (vector store). Later phases add BM25, a re-ranker, RAGAS, LangSmith, FastAPI, Streamlit.
+## What it does
 
-## Dataset
-`data/docs/` — **109 synthetic markdown documents** across 8 categories, deliberately
-built with retrieval traps (similar-but-distinct doc families, per-region figures,
-service-specific error codes) to stress-test retrieval:
-- `hr/` — global policies + **per-region** (US/UK/Germany/India) PTO, parental leave, holidays, notice
-- `engineering/` — architecture, on-call, releases, standards, git, **15 service runbooks**, **12 postmortems**
-- `it-security/` — VPN, passwords, data classification, laptops, **8 tool guides**
-- `operations/` — refunds, escalation, SLAs, GDPR deletion, discounts, vendor/contract SOPs
-- `product/` — 11 feature specs (plan availability, limits)
-- `faq/`, `onboarding/`, `meeting-notes/` — short docs and cross-references
+Employees ask plain-English questions ("How much vacation do staff in Germany get?",
+"What does error `OKTA-403` mean?") and get an answer drawn **only** from the company's
+documents, with citations — or an honest "I don't know" when the documents don't cover it.
 
-`eval/eval_set.py` — 30 labeled `question → gold document` pairs + 5 abstention questions.
+```mermaid
+flowchart TD
+    Q[User question] --> S["Hybrid search<br/>BM25 keyword + semantic"]
+    S --> R["Cross-encoder re-ranker<br/>keeps the top 4"]
+    R --> G["Gemini 2.5 Flash<br/>answers from context only"]
+    G --> A["Answer + citations<br/>or: I don't know"]
+```
 
-## Setup
+The pipeline uses three models, each for the job it is best at: a fast embedder to narrow
+109 documents to a shortlist, a slower but precise cross-encoder to pick the best few, and
+a chat model to write the final answer. Retrieval runs locally and free; only the final
+answer calls the Gemini API.
+
+---
+
+## Headline result
+
+The project doesn't just *use* hybrid search and re-ranking — it **measures whether they
+help**, on a hard evaluation set of 27 paraphrased, synonym-heavy, and loose-code queries
+(the way real users actually ask). Metric is **MRR** (how close to the top of the results
+the correct document lands; 1.0 = always first).
+
+With a small, free, **local** embedder, each retrieval upgrade improves the score:
+
+| Strategy | Hit@4 | MRR |
+|---|---|---|
+| Dense (semantic only) | 0.704 | 0.611 |
+| Hybrid (BM25 + dense) | 0.852 | 0.719 |
+| **Hybrid + re-ranker** | **0.963** | **0.861** |
+
+Re-ranking lifted MRR by **+41%** and Hit@4 by **+37%**.
+
+But running the same test with a **state-of-the-art** embedder (`gemini-embedding-001`)
+told a more interesting story:
+
+| Embedder | Dense MRR | Hybrid MRR | Re-rank MRR |
+|---|---|---|---|
+| `gemini-embedding-001` (SOTA, paid) | **0.944** | 0.873 | 0.861 |
+| `all-MiniLM-L6-v2` (small, free, local) | 0.611 | 0.719 | **0.861** |
+
+**Two takeaways this surfaced:**
+
+1. **Hybrid search and re-ranking are not universally beneficial.** They rescue a weak or
+   generic embedder; they add little (and can slightly hurt) on a SOTA embedder over a small,
+   clean corpus. The right move is to measure, not assume.
+2. **The re-ranker converges to the same quality (MRR ≈ 0.86) from both directions.** A free,
+   offline embedder plus hybrid search and re-ranking reaches essentially the same retrieval
+   quality as the paid SOTA embedding API — a real cost and privacy result for production.
+
+Full analysis: [`eval/results-summary.md`](eval/results-summary.md).
+
+---
+
+## Evaluation
+
+Most RAG demos stop at "it answers questions." This project measures it on two axes.
+
+**Retrieval quality** (`src/evaluate.py`) — against a labeled `question → correct-document`
+set, reports Hit@k, MRR, precision, and recall. Runs fully offline.
+
+**Answer quality** (`src/judge.py`) — an LLM-as-judge grades each written answer for
+*faithfulness* (no claims beyond the retrieved documents) and *relevancy* (does it answer
+the question), plus an *abstention* check (does it correctly refuse when the documents lack
+the answer).
+
+The labeled question sets live in `eval/`, including a deliberately hard set with
+synonyms ("Deutschland", "Britain", "maternity") and loose error codes.
+
+---
+
+## Tech stack
+
+- **Orchestration:** LangChain (core + text-splitters), with hybrid fusion and re-ranking
+  implemented directly (Reciprocal Rank Fusion + cross-encoder) rather than via framework
+  wrappers, for resilience to version churn.
+- **Generation:** Google Gemini 2.5 Flash.
+- **Embeddings:** swappable — `gemini-embedding-001` (API) or `all-MiniLM-L6-v2` (local).
+- **Keyword search:** BM25 (`rank-bm25`) with a custom tokenizer so loose codes ("STR 418")
+  match documents storing them as `STR-418`.
+- **Re-ranker:** `cross-encoder/ms-marco-MiniLM-L-6-v2` (local, no API).
+- **Vector store:** Chroma (local, persistent).
+
+---
+
+## Project structure
+
+```
+src/
+  config.py      # env, model names, retrieval knobs
+  loader.py      # load + chunk markdown (no API; unit-testable)
+  embeddings.py  # picks Gemini or local embeddings
+  ingest.py      # embed chunks -> Chroma (throttled for free tier)
+  retriever.py   # dense / hybrid / hybrid+rerank strategies
+  rag.py         # retrieve -> prompt -> cited answer
+  ask.py         # terminal entrypoint
+  evaluate.py    # Phase 2: retrieval metrics
+  judge.py       # Phase 3: answer-quality (LLM-as-judge)
+data/docs/       # 109 synthetic documents, 8 categories
+eval/            # labeled question sets + results
+```
+
+---
+
+## Quickstart
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env               # then paste your Gemini key into .env
-```
-Get a free Gemini API key from Google AI Studio: https://aistudio.google.com/app/apikey
+cp .env.example .env               # add a Gemini key (free: aistudio.google.com/app/apikey)
 
-## Running Phase 1
-```bash
-# 1. Build the vector store: load -> chunk -> embed -> persist to Chroma
-python -m src.ingest
-
-# 2. Ask questions
-python -m src.ask "How many vacation days do I get and can I carry them over?"
-
-# or interactive mode
-python -m src.ask
+python -m src.ingest               # build the index
+python -m src.ask "How much vacation do staff in Germany get?"
 ```
 
-Good questions to try (the last one *should* be refused — that's the point):
-- "How many vacation days do I get and can I carry them over?"
-- "How do I report a security incident, and how fast?"
-- "What's the on-call stipend?"
-- "Does Vela Cloud offer pet insurance?"   ← not in the docs → "I don't know..."
-
-### Capture the baseline (do this before Phase 2)
-```bash
-python -m src.baseline      # runs 6 probe questions -> baseline_results.md
-```
-Open `baseline_results.md`, mark each answer ✅ / ⚠️ / ❌, and commit it. This is your
-permanent "before" record — the evidence that Phase 2's hybrid search + re-ranker
-actually improved things.
-
-### Measure retrieval quality (the Phase 2 yardstick)
-```bash
-python -m src.evaluate            # writes eval/results-baseline.md
-```
-This scores the retriever on the 30 labeled questions — **Hit@k, MRR, Precision, Recall** —
-without involving the LLM, so it isolates retrieval. Commit `eval/results-baseline.md`.
-After Phase 2, run `python -m src.evaluate phase2` and diff the two reports.
-
-### Phase 2: hybrid search + re-ranking
-Set the strategy in `.env` (`RETRIEVAL_MODE=dense|hybrid|rerank`, default `rerank`).
-The app (`src.ask`) uses whatever mode is set. To produce the before/after evidence,
-run the eval across modes on the **hard** set (paraphrased / keyword-divergent queries):
+Reproduce the retrieval comparison (offline, no API key needed for these):
 
 ```bash
 python -m src.evaluate dense-hard   --mode dense   --set hard
 python -m src.evaluate hybrid-hard  --mode hybrid  --set hard
 python -m src.evaluate rerank-hard  --mode rerank  --set hard
 ```
-Then compare the three `eval/results-*.md` files — expect `dense < hybrid < rerank`
-on MRR. (First `rerank` run downloads a small cross-encoder model, ~80MB.)
-A harmless `langchain-community` deprecation warning may print; BM25 still works.
 
-## Code map (`src/`)
-| File | Role |
-|------|------|
-| `config.py` | Loads `.env`, model names, paths, chunking/retrieval knobs |
-| `loader.py` | Load `.md` files → Documents → chunks (no API needed; unit-testable) |
-| `ingest.py` | Embed chunks with Gemini and persist them to Chroma |
-| `rag.py` | Retrieve top-k chunks → prompt Gemini → cited answer |
-| `retriever.py` | Phase 2: dense / hybrid (BM25+dense) / hybrid+rerank strategies |
-| `ask.py` | Terminal entrypoint (one-shot or interactive) |
-| `baseline.py` | Runs probe questions → `baseline_results.md` (before/after evidence) |
-| `evaluate.py` | Scores retrieval (Hit@k, MRR, P/R) over `eval/eval_set.py` → `eval/results-*.md` |
+Switch the embedder with `EMBEDDING_PROVIDER=gemini|local` in `.env` (re-run ingest after).
 
-## Notes
-- **Embedding dimensions:** `gemini-embedding-001` returns 3072-dim vectors by default.
-  To save space you can set `output_dimensionality=768` in `GoogleGenerativeAIEmbeddings`.
-- **Free-tier rate limits:** the dataset is tiny (20 docs → ~22 chunks), so ingest stays
-  well within Gemini's free-tier limits. If you expand the corpus a lot and hit a 429,
-  re-run `python -m src.ingest` (it rebuilds cleanly) or add a short retry/sleep.
-- **Reproducible index:** `ingest` wipes and rebuilds `.chroma/` each run, so the vector
-  store always matches your current docs.
+---
+
+## Engineering notes
+
+- **Embedder and retrieval strategy are independent dials** — `EMBEDDING_PROVIDER`
+  (which model embeds) and `RETRIEVAL_MODE` (dense/hybrid/rerank). The cross-embedder
+  comparison above came from sweeping both.
+- **Free-tier aware** — ingestion batches and throttles to respect Gemini's free-tier
+  rate limits; embeddings and re-ranking can run entirely offline to avoid them.
+- **Honest "I don't know"** — the prompt constrains answers to retrieved context and the
+  abstention set tests it directly, rather than assuming it works.
+
+---
+
+*Built as a learning project to practice production RAG patterns end to end:
+ingestion, hybrid retrieval, re-ranking, and measurable evaluation.*

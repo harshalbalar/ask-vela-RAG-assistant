@@ -59,4 +59,4 @@ def answer_question(question: str) -> dict:
         {"n": i, "title": d.metadata.get("title"), "source": d.metadata.get("source")}
         for i, d in enumerate(docs, start=1)
     ]
-    return {"answer": answer, "sources": sources}
+    return {"answer": answer, "sources": sources, "context": context}
