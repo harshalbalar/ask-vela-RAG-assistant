@@ -1,12 +1,15 @@
-"""Phase 4: FastAPI service + lightweight observability.
+"""Phase 4-5: FastAPI service + web chat UI + lightweight observability.
 
-Exposes the RAG assistant as a web API and logs every request (latency + which
-documents were used) to logs/requests.jsonl.
+- GET  /            -> chat web page (src/static/index.html)
+- GET  /health      -> status
+- POST /ask         -> {question} -> {answer, sources, latency_ms, retrieval_mode}
+
+Every /ask is logged (latency + documents used) to logs/requests.jsonl.
+On a fresh host with no index, it self-builds one at startup.
 
 Run from the project root:
     uvicorn src.api:app --reload
-
-Then open http://127.0.0.1:8000/docs for an interactive testing page.
+Then open http://127.0.0.1:8000/
 """
 import json
 import time
@@ -14,11 +17,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from src.config import RETRIEVAL_MODE, EMBEDDING_PROVIDER, ROOT
+from src.config import RETRIEVAL_MODE, EMBEDDING_PROVIDER, VECTOR_DB_DIR, ROOT
 
 LOG_PATH = ROOT / "logs" / "requests.jsonl"
+STATIC_DIR = ROOT / "src" / "static"
 
 
 class AskRequest(BaseModel):
@@ -46,14 +51,18 @@ def _log(record: dict) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Warm the retriever once at startup (loads BM25 + cross-encoder + vector store)
-    # so the first real request is fast. Fully offline — no Gemini call here.
     try:
+        # On a fresh host (e.g. a deployed container) build the index once.
+        if not VECTOR_DB_DIR.exists():
+            from src.ingest import build_index
+            print("No index found — building it (first-time setup)...")
+            build_index()
+        # Warm the retriever (loads BM25 + cross-encoder + vector store). Offline.
         from src.rag import get_retriever
         get_retriever().invoke("warmup")
         print("Retriever warmed up and ready.")
     except Exception as e:
-        print(f"Warm-up skipped ({e}); will load on first request.")
+        print(f"Startup warm-up skipped ({e}); will load on first request.")
     yield
 
 
@@ -63,6 +72,11 @@ app = FastAPI(
     version="1.0",
     lifespan=lifespan,
 )
+
+
+@app.get("/")
+def home() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")

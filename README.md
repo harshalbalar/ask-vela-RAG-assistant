@@ -2,8 +2,8 @@
 
 A retrieval-augmented question-answering system over a company's internal documents,
 built to production patterns: hybrid search, cross-encoder re-ranking, source-cited
-answers, and — the part most portfolios skip — a measured evaluation of both retrieval
-and answer quality.
+answers, a web UI and API, and — the part most portfolios skip — a measured evaluation
+of both retrieval and answer quality.
 
 > Repo: `ask-vela-rag-assistant`. **Vela Cloud is a fictional company**; all 109 documents
 > in `data/docs/` are synthetic, written for this project. No real company data is used.
@@ -24,7 +24,7 @@ flowchart TD
     G --> A["Answer + citations<br/>or: I don't know"]
 ```
 
-The pipeline uses three models, each for the job it is best at: a fast embedder to narrow
+The pipeline uses three models, each for the job it is best at: a small embedder to narrow
 109 documents to a shortlist, a slower but precise cross-encoder to pick the best few, and
 a chat model to write the final answer. Retrieval runs locally and free; only the final
 answer calls the Gemini API.
@@ -35,8 +35,8 @@ answer calls the Gemini API.
 
 The project doesn't just *use* hybrid search and re-ranking — it **measures whether they
 help**, on a hard evaluation set of 27 paraphrased, synonym-heavy, and loose-code queries
-(the way real users actually ask). Metric is **MRR** (how close to the top of the results
-the correct document lands; 1.0 = always first).
+(the way real users actually ask). The metric is **MRR** (how close to the top of the
+results the correct document lands; 1.0 = always first).
 
 With a small, free, **local** embedder, each retrieval upgrade improves the score:
 
@@ -48,8 +48,8 @@ With a small, free, **local** embedder, each retrieval upgrade improves the scor
 
 Re-ranking lifted MRR by **+41%** and Hit@4 by **+37%**.
 
-But running the same test with a **state-of-the-art** embedder (`gemini-embedding-001`)
-told a more interesting story:
+Running the same test with a **state-of-the-art** embedder (`gemini-embedding-001`) told a
+more interesting story:
 
 | Embedder | Dense MRR | Hybrid MRR | Re-rank MRR |
 |---|---|---|---|
@@ -74,15 +74,25 @@ Full analysis: [`eval/results-summary.md`](eval/results-summary.md).
 Most RAG demos stop at "it answers questions." This project measures it on two axes.
 
 **Retrieval quality** (`src/evaluate.py`) — against a labeled `question → correct-document`
-set, reports Hit@k, MRR, precision, and recall. Runs fully offline.
+set, reports Hit@k, MRR, precision, and recall. Runs fully offline. Results above.
 
 **Answer quality** (`src/judge.py`) — an LLM-as-judge grades each written answer for
 *faithfulness* (no claims beyond the retrieved documents) and *relevancy* (does it answer
 the question), plus an *abstention* check (does it correctly refuse when the documents lack
-the answer).
+the answer):
 
-The labeled question sets live in `eval/`, including a deliberately hard set with
-synonyms ("Deutschland", "Britain", "maternity") and loose error codes.
+| Metric | Score |
+|---|---|
+| Faithfulness (no hallucination) | 1.00 |
+| Relevancy (answers the question) | 1.00 |
+| Abstention accuracy | 3 / 3 |
+
+Caveat (stated plainly): this is a small, clean, synthetic set graded by the same model
+family — a strong signal, not a production guarantee. A natural next step is a larger noisy
+set, a different judge model to avoid self-grading bias, and human spot-checks.
+
+The labeled question sets live in `eval/`, including a deliberately hard set with synonyms
+("Deutschland", "Britain", "maternity") and loose error codes.
 
 ---
 
@@ -97,6 +107,7 @@ synonyms ("Deutschland", "Britain", "maternity") and loose error codes.
   match documents storing them as `STR-418`.
 - **Re-ranker:** `cross-encoder/ms-marco-MiniLM-L-6-v2` (local, no API).
 - **Vector store:** Chroma (local, persistent).
+- **Serving:** FastAPI + a single-page web UI; container-ready via the included `Dockerfile`.
 
 ---
 
@@ -111,10 +122,13 @@ src/
   retriever.py   # dense / hybrid / hybrid+rerank strategies
   rag.py         # retrieve -> prompt -> cited answer
   ask.py         # terminal entrypoint
-  evaluate.py    # Phase 2: retrieval metrics
-  judge.py       # Phase 3: answer-quality (LLM-as-judge)
+  evaluate.py    # retrieval metrics (Hit@k, MRR, P/R)
+  judge.py       # answer-quality (LLM-as-judge)
+  api.py         # FastAPI service + web UI + request logging
+  static/        # the chat web page
 data/docs/       # 109 synthetic documents, 8 categories
 eval/            # labeled question sets + results
+Dockerfile       # optional containerized run
 ```
 
 ---
@@ -128,11 +142,20 @@ pip install -r requirements.txt
 cp .env.example .env               # add a Gemini key (free: aistudio.google.com/app/apikey)
 
 python -m src.ingest               # build the index
+```
+
+**Command line:**
+```bash
 python -m src.ask "How much vacation do staff in Germany get?"
 ```
 
-Reproduce the retrieval comparison (offline, no API key needed for these):
+**Web app** (chat UI + API):
+```bash
+uvicorn src.api:app --reload
+```
+Then open **http://127.0.0.1:8000** for the chat interface, or `/docs` for the API.
 
+**Reproduce the retrieval comparison** (offline, no API key needed):
 ```bash
 python -m src.evaluate dense-hard   --mode dense   --set hard
 python -m src.evaluate hybrid-hard  --mode hybrid  --set hard
@@ -147,13 +170,15 @@ Switch the embedder with `EMBEDDING_PROVIDER=gemini|local` in `.env` (re-run ing
 
 - **Embedder and retrieval strategy are independent dials** — `EMBEDDING_PROVIDER`
   (which model embeds) and `RETRIEVAL_MODE` (dense/hybrid/rerank). The cross-embedder
-  comparison above came from sweeping both.
+  comparison came from sweeping both.
 - **Free-tier aware** — ingestion batches and throttles to respect Gemini's free-tier
   rate limits; embeddings and re-ranking can run entirely offline to avoid them.
-- **Honest "I don't know"** — the prompt constrains answers to retrieved context and the
-  abstention set tests it directly, rather than assuming it works.
+- **Honest "I don't know"** — the prompt constrains answers to retrieved context, and the
+  abstention set tests this directly rather than assuming it works.
+- **Observability** — every API request logs latency and the documents used to
+  `logs/requests.jsonl`.
 
 ---
 
 *Built as a learning project to practice production RAG patterns end to end:
-ingestion, hybrid retrieval, re-ranking, and measurable evaluation.*
+ingestion, hybrid retrieval, re-ranking, a served web app, and measurable evaluation.*
