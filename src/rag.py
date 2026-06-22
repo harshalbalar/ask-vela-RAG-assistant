@@ -56,7 +56,8 @@ def answer_question(question: str) -> dict:
     answer = chain.invoke({"context": context, "question": question})
 
     sources = [
-        {"n": i, "title": d.metadata.get("title"), "source": d.metadata.get("source")}
+        {"n": i, "title": d.metadata.get("title"),
+         "source": (d.metadata.get("source") or "").replace("\\", "/")}
         for i, d in enumerate(docs, start=1)
     ]
     return {"answer": answer, "sources": sources, "context": context}
